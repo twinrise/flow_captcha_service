@@ -1,6 +1,6 @@
 # Flow Captcha Service — Ray / Ray Serve 重写架构设计提案
 
-> 状态：**待审核（Draft）** | 版本：1.2 | 更新日期：2026-04-09
+> 状态：**待审核（Draft）** | 版本：1.3 | 更新日期：2026-04-09
 >
 > 本文档评估将 Flow Captcha Service 从当前的"自研 HTTP + SQLite + 心跳"集群协调方案迁移到 **Ray / Ray Serve** 框架的可行性、架构设计和迁移成本。
 
@@ -19,6 +19,7 @@
 9. [最终评估与建议](#9-最终评估与建议)
 10. [完整技术栈](#10-完整技术栈)
 11. [k3s 起步方案（推荐）](#11-k3s-起步方案推荐)
+12. [新代码库目录结构规划](#12-新代码库目录结构规划)
 
 ---
 
@@ -973,6 +974,569 @@ k3s 的最大优势是**可以从单节点平滑成长到生产 HA 集群**：
 | **推荐场景** | 节点数 5-20 的早期/中期阶段 |
 
 > **最终建议**：如果决定走 Ray 方案，**强烈推荐从 k3s 单节点起步**，等业务规模真的需要再迁移到完整 K8s。这样既能拿到 Ray 的全部好处，又不会被 K8s 的运维复杂度劝退。
+
+---
+
+## 12. 新代码库目录结构规划
+
+> 本章描述如果**从头重写**项目时推荐的目录结构。遵循现代 Python 工程实践 + 领域驱动设计 + Ray Serve 项目惯例。
+
+### 12.1 核心设计原则
+
+| 原则 | 说明 |
+|------|------|
+| **`src/` layout** | 现代 Python 最佳实践，强制通过包安装方式导入，避免 sys.path 污染 |
+| **按领域 + 按层混合分组** | 不纯粹按层（如 `models/`、`controllers/`），而是先按领域（captcha/identity/billing），领域内再按层 |
+| **领域层独立于框架** | `domain/` 不依赖 FastAPI、Ray、SQLAlchemy，便于单元测试和未来重构 |
+| **Ray 代码隔离到独立模块** | `ray_app/` 集中管理 Deployment 和 Actor，不污染业务代码 |
+| **基础设施抽象在 `infra/`** | DB、Redis、Ray runtime 的连接和配置统一管理 |
+| **测试镜像源码结构** | `tests/` 目录结构与 `src/fcs/` 一一对应，分 unit/integration/e2e |
+| **部署与代码分离** | Dockerfile、Helm Chart、k3s manifests 全部放 `deploy/` |
+| **配置外部化** | `config/` 存放 TOML，环境变量覆盖 |
+
+### 12.2 完整目录树
+
+```
+flow_captcha_service/
+│
+├── pyproject.toml                  # 项目元数据 + 依赖（取代 requirements.txt）
+├── README.md
+├── LICENSE
+├── .python-version                 # pyenv 锁定 Python 版本
+├── .gitignore
+├── .dockerignore
+├── .pre-commit-config.yaml         # 代码检查 hook
+│
+├── src/                            # ============ 所有源代码 ============
+│   └── fcs/                        # 主包(Flow Captcha Service)
+│       ├── __init__.py
+│       │
+│       ├── core/                   # 横切关注点 / 通用基础
+│       │   ├── __init__.py
+│       │   ├── config.py           # 配置加载（TOML + ENV）
+│       │   ├── logging.py          # 结构化日志配置
+│       │   ├── errors.py           # 业务异常类层次
+│       │   ├── types.py            # 共享类型别名
+│       │   └── constants.py        # 全局常量
+│       │
+│       ├── infra/                  # ========== 基础设施层 ==========
+│       │   ├── __init__.py
+│       │   ├── db/
+│       │   │   ├── engine.py       # asyncpg 连接池
+│       │   │   ├── session.py      # 事务/会话管理
+│       │   │   ├── models.py       # SQLAlchemy ORM 模型（可选）
+│       │   │   ├── repositories/   # Repository 模式
+│       │   │   │   ├── api_keys.py
+│       │   │   │   ├── users.py
+│       │   │   │   ├── jobs.py
+│       │   │   │   ├── quota.py
+│       │   │   │   └── cdk.py
+│       │   │   └── migrations/     # Alembic
+│       │   │       ├── env.py
+│       │   │       ├── alembic.ini
+│       │   │       └── versions/
+│       │   ├── redis/
+│       │   │   ├── client.py       # 异步 Redis 客户端
+│       │   │   ├── rate_limit.py   # 限流实现
+│       │   │   └── cache.py        # 缓存抽象
+│       │   └── ray/                # Ray runtime 相关
+│       │       ├── handles.py      # Detached actor handles 获取
+│       │       ├── config.py       # ray.init / serve.start 配置
+│       │       └── lifecycle.py    # Ray 生命周期管理
+│       │
+│       ├── domain/                 # ========== 领域层（纯业务） ==========
+│       │   ├── __init__.py         # 不依赖任何框架，纯 Pydantic/dataclass
+│       │   ├── captcha/
+│       │   │   ├── models.py       # CaptchaRequest, TokenResult
+│       │   │   ├── enums.py        # CaptchaType, CaptchaMethod
+│       │   │   └── protocols.py    # CaptchaSolver 接口定义
+│       │   ├── identity/
+│       │   │   ├── api_key.py      # APIKey 实体
+│       │   │   ├── user.py         # User 实体
+│       │   │   └── permissions.py
+│       │   ├── billing/
+│       │   │   ├── quota.py        # Quota 值对象
+│       │   │   ├── transaction.py
+│       │   │   └── cdk.py          # CDK 兑换码
+│       │   └── session/
+│       │       ├── state.py        # SessionState 状态机
+│       │       └── lifecycle.py
+│       │
+│       ├── browser/                # ========== 浏览器自动化 ==========
+│       │   ├── __init__.py         # 业务逻辑独立于 Ray
+│       │   ├── base.py             # BrowserEngine 抽象基类
+│       │   ├── playwright_engine.py  # Playwright 实现
+│       │   ├── nodriver_engine.py    # nodriver 实现
+│       │   ├── fingerprint.py      # UA 指纹池
+│       │   ├── proxy.py            # 代理配置
+│       │   ├── stealth.py          # 反检测 patches
+│       │   └── solvers/            # 各类验证码解决器
+│       │       ├── __init__.py
+│       │       ├── recaptcha_v2.py
+│       │       ├── recaptcha_v3.py
+│       │       ├── turnstile.py
+│       │       └── flow_native.py
+│       │
+│       ├── ray_app/                # ========== Ray Serve 应用 ==========
+│       │   ├── __init__.py
+│       │   ├── entrypoint.py       # serve.run() 主入口
+│       │   ├── deployments/
+│       │   │   ├── api_gateway.py        # APIGateway Deployment
+│       │   │   ├── browser_pool.py       # BrowserPool (Playwright)
+│       │   │   └── browser_pool_personal.py  # BrowserPool (nodriver)
+│       │   ├── actors/             # Detached Actor 集
+│       │   │   ├── token_pool.py         # TokenPoolActor
+│       │   │   ├── session_registry.py   # SessionRegistryActor
+│       │   │   └── quota_tracker.py      # QuotaTrackerActor
+│       │   └── routing/
+│       │       ├── multiplex.py    # @serve.multiplexed 封装
+│       │       └── affinity.py     # Project affinity 辅助
+│       │
+│       ├── api/                    # ========== HTTP API 层 ==========
+│       │   ├── __init__.py
+│       │   ├── app.py              # FastAPI app factory
+│       │   ├── deps.py             # 依赖注入（actor handles 等）
+│       │   ├── schemas/            # 请求/响应 Pydantic 模型
+│       │   │   ├── captcha.py
+│       │   │   ├── admin.py
+│       │   │   ├── portal.py
+│       │   │   └── common.py
+│       │   ├── middleware/
+│       │   │   ├── auth.py
+│       │   │   ├── logging.py
+│       │   │   ├── error_handler.py
+│       │   │   └── cors.py
+│       │   ├── v1/                 # 主 API（版本化）
+│       │   │   ├── __init__.py
+│       │   │   ├── service.py      # /api/v1/solve, /prefill, /finish
+│       │   │   ├── admin.py        # /api/admin/*
+│       │   │   ├── portal.py       # /portal/*
+│       │   │   └── health.py
+│       │   └── compat/             # 第三方协议兼容
+│       │       └── yescaptcha.py   # YesCaptcha 协议
+│       │
+│       ├── services/               # ========== 应用服务层 ==========
+│       │   ├── __init__.py         # 用例编排，不直接依赖 HTTP
+│       │   ├── captcha_service.py  # 解决验证码用例
+│       │   ├── quota_service.py    # 配额扣减/退还
+│       │   ├── api_key_service.py
+│       │   ├── user_service.py
+│       │   └── cdk_service.py
+│       │
+│       ├── auth/                   # ========== 认证模块 ==========
+│       │   ├── __init__.py
+│       │   ├── api_key_auth.py     # Bearer fcs_xxx
+│       │   ├── admin_auth.py       # Admin Cookie
+│       │   ├── portal_auth.py      # Portal Cookie
+│       │   ├── password.py         # bcrypt 工具
+│       │   └── tokens.py           # token 生成/校验
+│       │
+│       └── cli/                    # ========== 命令行工具 ==========
+│           ├── __init__.py
+│           ├── main.py             # 主 CLI 入口（typer/click）
+│           ├── admin.py            # 创建管理员/重置密码
+│           ├── migrate.py          # alembic 包装
+│           └── seed.py             # 初始化测试数据
+│
+├── tests/                          # ============ 测试代码 ============
+│   ├── conftest.py                 # 全局 fixtures
+│   ├── fixtures/                   # 测试数据
+│   │   └── captcha_pages/
+│   ├── unit/                       # 单元测试（无外部依赖）
+│   │   ├── domain/
+│   │   ├── browser/
+│   │   ├── services/
+│   │   └── core/
+│   ├── integration/                # 集成测试（真实 PG/Redis/Ray）
+│   │   ├── api/
+│   │   ├── infra/
+│   │   ├── ray_app/
+│   │   └── browser/
+│   └── e2e/                        # 端到端测试
+│       ├── test_full_solve_flow.py
+│       └── test_yescaptcha_compat.py
+│
+├── frontend/                       # ============ 前端 UI ============
+│   ├── admin/                      # 管理后台静态文件
+│   │   ├── index.html
+│   │   ├── assets/
+│   │   └── ...
+│   ├── portal/                     # 用户门户静态文件
+│   │   ├── index.html
+│   │   └── ...
+│   └── shared/                     # 共享资源
+│       └── styles/
+│
+├── deploy/                         # ============ 部署相关 ============
+│   ├── docker/
+│   │   ├── Dockerfile.head         # Ray head node 镜像
+│   │   ├── Dockerfile.worker       # Ray worker 镜像（含浏览器）
+│   │   ├── docker-compose.dev.yml  # 本地开发栈
+│   │   └── entrypoints/
+│   │       ├── head.sh
+│   │       └── worker.sh           # Xvfb + Ray worker 启动
+│   ├── helm/                       # Helm Chart
+│   │   └── flow-captcha/
+│   │       ├── Chart.yaml
+│   │       ├── values.yaml
+│   │       ├── values-prod.yaml
+│   │       ├── values-dev.yaml
+│   │       └── templates/
+│   │           ├── rayservice.yaml
+│   │           ├── ingress.yaml
+│   │           ├── configmap.yaml
+│   │           └── secrets.yaml
+│   ├── k3s/                        # k3s 特定脚本和清单
+│   │   ├── install.sh              # 一键安装脚本
+│   │   ├── bootstrap.md            # 部署文档
+│   │   └── manifests/
+│   │       ├── kuberay-operator.yaml
+│   │       ├── postgres.yaml
+│   │       ├── redis.yaml
+│   │       └── monitoring.yaml
+│   └── ray/                        # Ray Serve 配置
+│       ├── serve_config.yaml       # 生产
+│       └── serve_config.dev.yaml   # 开发
+│
+├── config/                         # ============ 应用配置 ============
+│   ├── default.toml                # 默认配置（含所有键的默认值）
+│   ├── development.toml            # 开发环境覆盖
+│   ├── production.toml             # 生产环境覆盖
+│   └── schema.json                 # 配置 schema 校验
+│
+├── scripts/                        # ============ 辅助脚本 ============
+│   ├── dev/                        # 开发用
+│   │   ├── start_local.sh          # 本地一键启动
+│   │   ├── reset_db.sh
+│   │   └── load_fixtures.py
+│   ├── ops/                        # 运维用
+│   │   ├── backup_db.sh
+│   │   ├── migrate.sh
+│   │   └── rotate_keys.py
+│   └── ci/                         # CI 用
+│       ├── lint.sh
+│       └── build_image.sh
+│
+├── docs/                           # ============ 文档 ============
+│   ├── ARCHITECTURE.md
+│   ├── DEPLOY_GUIDE.md
+│   ├── DEVELOPMENT.md              # 本地开发指南
+│   ├── API.md                      # API 文档
+│   ├── RAY_REWRITE_PROPOSAL.md     # 本提案
+│   ├── adr/                        # 架构决策记录
+│   │   ├── 0001-use-ray-serve.md
+│   │   ├── 0002-postgresql.md
+│   │   └── 0003-k3s-bootstrap.md
+│   └── images/
+│
+└── .github/                        # ============ CI/CD ============
+    └── workflows/
+        ├── test.yml
+        ├── build.yml
+        └── deploy.yml
+```
+
+### 12.3 关键模块的设计理由
+
+#### 12.3.1 为什么用 `src/` layout
+
+```python
+# 旧的 flat layout
+flow_captcha_service/
+├── src/
+│   ├── api/
+│   ├── core/
+│   └── ...
+
+# 新的 src/fcs/ layout
+flow_captcha_service/
+├── src/
+│   └── fcs/
+│       ├── api/
+│       ├── core/
+│       └── ...
+```
+
+**好处**：
+- 强制以 `from fcs.api import ...` 方式导入，避免相对路径混乱
+- 必须通过 `pip install -e .` 安装才能 import，防止意外用到未安装的包
+- pytest 不会污染 sys.path
+- 这是 PyPA 官方推荐的现代布局
+
+#### 12.3.2 `domain/` 层为什么独立
+
+```python
+# domain/captcha/models.py
+from pydantic import BaseModel
+# ❌ 不要 import fastapi, ray, sqlalchemy
+
+class CaptchaRequest(BaseModel):
+    project_id: str
+    action: str
+
+class TokenResult(BaseModel):
+    token: str
+    expires_at: int
+```
+
+**好处**：
+- 单元测试时无需启动任何外部服务
+- 未来如果要换框架（比如 FastAPI → Litestar），领域层完全不动
+- 业务规则集中，看 `domain/` 就能理解项目做什么
+
+#### 12.3.3 `ray_app/` 为什么单独抽出
+
+```python
+# ray_app/deployments/browser_pool.py
+from ray import serve
+from fcs.browser.playwright_engine import PlaywrightEngine
+from fcs.domain.captcha.models import CaptchaRequest, TokenResult
+
+@serve.deployment(...)
+class BrowserPoolReplica:
+    def __init__(self):
+        self.engine = PlaywrightEngine()  # ← 复用 browser/ 模块
+
+    @serve.multiplexed(max_num_models_per_replica=5)
+    async def get_warm_page(self, project_id: str):
+        return await self.engine.warm_page_for(project_id)
+
+    async def solve(self, req: CaptchaRequest) -> TokenResult:
+        return await self.engine.solve(req)
+```
+
+**好处**：
+- Ray 的 Deployment 装饰器和 Actor 装饰器都集中在一处，便于查找
+- `browser/` 模块本身不依赖 Ray，可以脱离 Ray 单独运行（用于测试）
+- 未来如果要替换 Ray（比如换成 NATS），只需要重写 `ray_app/`，业务代码不动
+
+#### 12.3.4 `api/` 与 `services/` 的分离
+
+```python
+# api/v1/service.py
+from fcs.services.captcha_service import CaptchaService
+from fcs.api.deps import get_captcha_service
+
+@router.post("/solve")
+async def solve(
+    request: SolveRequest,
+    service: CaptchaService = Depends(get_captcha_service),
+):
+    # API 层只做参数校验和响应封装
+    result = await service.solve(request.to_domain())
+    return SolveResponse.from_domain(result)
+
+
+# services/captcha_service.py
+class CaptchaService:
+    def __init__(self, browser_pool, token_pool, quota_repo):
+        self.browser_pool = browser_pool
+        self.token_pool = token_pool
+        self.quota_repo = quota_repo
+
+    async def solve(self, req: CaptchaRequest) -> TokenResult:
+        # 用例编排:配额检查 → token 池命中 → 浏览器解决
+        await self.quota_repo.check(req.api_key)
+        if cached := await self.token_pool.get(req.bucket):
+            return cached
+        return await self.browser_pool.solve.remote(req)
+```
+
+**好处**：
+- API 层只关心 HTTP 协议（参数解析、状态码、响应格式）
+- Service 层只关心业务用例编排
+- 同一个 Service 可以被 HTTP API、CLI、消息队列等多个入口复用
+
+#### 12.3.5 `infra/db/repositories/` 仓储模式
+
+```python
+# infra/db/repositories/api_keys.py
+class APIKeyRepository:
+    def __init__(self, session):
+        self.session = session
+
+    async def find_by_hash(self, key_hash: str) -> Optional[APIKey]:
+        ...
+
+    async def save(self, api_key: APIKey) -> None:
+        ...
+```
+
+**好处**：
+- 数据库访问全部走 Repository，方便测试时 mock
+- 切换 ORM（asyncpg ↔ SQLAlchemy）只改 Repository 实现
+- 业务代码不直接写 SQL
+
+#### 12.3.6 `frontend/` 与 `src/` 分离
+
+把前端静态文件放到顶层 `frontend/` 而不是 `src/fcs/static/`：
+- 前端的构建产物可能很大，不应该和 Python 包绑在一起
+- 部署时可以独立打包前端到 CDN 或 Nginx
+- 未来前端如果用 React/Vue 改造，有独立的构建流程
+
+### 12.4 新旧文件迁移对照表
+
+| 现有文件 | 新位置 | 备注 |
+|---------|-------|------|
+| `src/main.py` | `src/fcs/ray_app/entrypoint.py` | Ray Serve 入口 |
+| `src/http_bridge.py` | **删除** | Ray Serve 自带 HTTP Proxy |
+| `src/core/config.py` | `src/fcs/core/config.py` | 几乎不变 |
+| `src/core/database.py` | `src/fcs/infra/db/engine.py` + `repositories/*` | 拆分为多个 Repository |
+| `src/core/auth.py` | `src/fcs/auth/*.py` | 按认证类型拆分 |
+| `src/core/models.py` | `src/fcs/domain/*/models.py` + `src/fcs/api/schemas/*` | 领域模型和 API DTO 分离 |
+| `src/core/log_store.py` | `src/fcs/infra/redis/log_store.py` | 移到基础设施层 |
+| `src/api/service.py` | `src/fcs/api/v1/service.py` | API 版本化 |
+| `src/api/admin.py` | `src/fcs/api/v1/admin.py` | 同上 |
+| `src/api/portal.py` | `src/fcs/api/v1/portal.py` | 同上 |
+| `src/api/cluster.py` | **删除** | Ray GCS 接管 |
+| `src/api/yescaptcha.py` | `src/fcs/api/compat/yescaptcha.py` | 移到兼容层 |
+| `src/services/captcha_runtime.py` | `src/fcs/services/captcha_service.py` | 简化 |
+| `src/services/browser_captcha.py` | `src/fcs/browser/playwright_engine.py` + `src/fcs/ray_app/deployments/browser_pool.py` | 业务和 Ray 分离 |
+| `src/services/browser_captcha_personal.py` | `src/fcs/browser/nodriver_engine.py` + `src/fcs/ray_app/deployments/browser_pool_personal.py` | 同上 |
+| `src/services/cluster_manager.py` | **完全删除**（约 1200 行） | Ray GCS + Serve 接管 |
+| `src/services/session_registry.py` | `src/fcs/ray_app/actors/session_registry.py` | 改造为 Ray Actor |
+| `src/services/yescaptcha_manager.py` | `src/fcs/services/yescaptcha_service.py` | 简化 |
+| `Dockerfile.headed` | `deploy/docker/Dockerfile.worker` | Worker 镜像 |
+| `Dockerfile.master` | `deploy/docker/Dockerfile.head` | Head 镜像 |
+| `docker-compose.*.yml` | `deploy/docker/docker-compose.dev.yml` | 仅保留开发用 |
+| `config/setting_*.toml` | `config/{development,production}.toml` | 标准化命名 |
+| `static/admin/*` | `frontend/admin/*` | 前端独立目录 |
+| `static/portal/*` | `frontend/portal/*` | 同上 |
+| `tests/*` | `tests/{unit,integration,e2e}/*` | 分层测试 |
+
+### 12.5 关键文件示例
+
+#### 12.5.1 `pyproject.toml`
+
+```toml
+[project]
+name = "flow-captcha-service"
+version = "2.0.0"
+description = "Self-hosted CAPTCHA solving service powered by Ray Serve"
+requires-python = ">=3.11"
+dependencies = [
+    "ray[serve]==2.9.3",
+    "ray[default]==2.9.3",
+    "fastapi>=0.110.0",
+    "pydantic>=2.6.0",
+    "asyncpg>=0.29.0",
+    "redis>=5.0.0",
+    "alembic>=1.13.0",
+    "playwright>=1.40.0",
+    "nodriver==0.48.1",
+    "httpx>=0.27.0",
+    "tenacity>=8.2.0",
+    "bcrypt>=4.1.0",
+    "typer>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "testcontainers[postgresql,redis]>=4.0.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+fcs = "fcs.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fcs"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+```
+
+#### 12.5.2 `src/fcs/ray_app/entrypoint.py`
+
+```python
+"""Ray Serve 应用入口"""
+from ray import serve
+from fcs.core.config import load_config
+from fcs.ray_app.actors.token_pool import create_token_pool
+from fcs.ray_app.actors.session_registry import create_session_registry
+from fcs.ray_app.deployments.api_gateway import APIGateway
+from fcs.ray_app.deployments.browser_pool import BrowserPool
+
+def build_app():
+    config = load_config()
+
+    # 1. 启动 detached actors（跨 deployment 共享）
+    token_pool = create_token_pool()
+    session_registry = create_session_registry()
+
+    # 2. 构建 BrowserPool deployment
+    browser_pool = BrowserPool.bind()
+
+    # 3. 构建 APIGateway deployment(注入依赖)
+    return APIGateway.bind(
+        browser_pool=browser_pool,
+        token_pool=token_pool,
+        session_registry=session_registry,
+    )
+
+app = build_app()
+```
+
+#### 12.5.3 `config/default.toml`
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8060
+
+[database]
+url = "postgresql+asyncpg://fcs:changeme@localhost:5432/fcs"
+pool_size = 20
+max_overflow = 10
+
+[redis]
+url = "redis://localhost:6379/0"
+
+[ray]
+address = "auto"
+namespace = "fcs"
+
+[captcha]
+default_method = "playwright"  # playwright | nodriver
+session_ttl_seconds = 1200
+standby_pool_depth = 2
+
+[browser_pool]
+min_replicas = 2
+max_replicas = 20
+target_ongoing_requests = 1
+max_warm_pages_per_replica = 5
+```
+
+### 12.6 目录结构的演进性
+
+这套结构在不同阶段的演进路径：
+
+#### 起步期（1-2 人开发）
+- `domain/`、`infra/`、`services/` 可以保持简单，每个领域只有 1-2 个文件
+- 不一定立刻引入 Repository 模式，可以先用直接 SQL
+
+#### 成长期（3-5 人）
+- 按领域拆分子模块
+- 引入 Repository 模式，便于测试
+- 加入 ADR（架构决策记录）文档
+
+#### 成熟期（5+ 人或多团队）
+- 可以把 `domain/` + `services/` + 部分 `infra/` 拆成独立的 Python 包
+- 用 monorepo 工具（如 uv workspace）管理多个子包
+- 前端可能完全独立成另一个 repo
 
 ---
 
