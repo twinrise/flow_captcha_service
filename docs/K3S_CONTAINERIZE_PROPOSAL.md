@@ -939,7 +939,7 @@ spec:
 
 ## 10. 完整技术栈
 
-### 10.1 总览
+### 10.1 技术栈总览
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -965,11 +965,158 @@ spec:
 │  PostgreSQL + Redis + asyncpg + redis-py              │
 ├──────────────────────────────────────────────────────┤
 │  Layer 1: 运行时                                      │
-│  Python 3.11 / asyncio                                │
+│  Python 3.11+ / asyncio                               │
 └──────────────────────────────────────────────────────┘
 ```
 
-### 10.2 核心依赖清单
+### 10.2 核心组件详细列表
+
+#### 10.2.1 容器编排层(核心新增)
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **k3s** | 1.28+ | 轻量级 Kubernetes 发行版,单二进制安装 | 🆕 新增 |
+| **Helm** | 3.13+ | K8s 应用包管理 | 🆕 新增 |
+| **Traefik** | 内置 | k3s 自带 Ingress Controller | 🆕 内置 |
+| **Klipper LB** | 内置 | k3s 自带的裸机 LoadBalancer | 🆕 内置 |
+| **local-path-provisioner** | 内置 | k3s 自带的 StorageClass | 🆕 内置 |
+| **CoreDNS** | 内置 | k3s 自带的服务发现 DNS | 🆕 内置 |
+| **embedded etcd** | 内置 | k3s HA 模式下用于 K8s 元数据存储 | 🆕 内置(HA 模式) |
+
+**为什么选 k3s 而不是完整 K8s**:
+- 单二进制 ~50MB,资源占用 ~700MB RAM(完整 K8s 需要 ~2GB)
+- 100% K8s API 兼容,kubectl/Helm 全部可用
+- 内置 Ingress / LB / Storage / DNS,**不需要单独部署**
+- 单节点起步,可平滑扩展到 HA 集群和完整 K8s
+
+#### 10.2.2 集群协调层(K8s 原生能力)
+
+| K8s 资源 | 作用 | 替代了什么 |
+|---------|------|----------|
+| **Service + Endpoints** | Subnode 服务发现 | 替代自研 HTTP `/register` 接口 |
+| **Headless Service** | 直接拿到所有 Subnode Pod IP | 替代节点列表 SQL 查询 |
+| **readinessProbe** | 5s 周期健康检查 | 替代 15s 心跳上报循环 |
+| **livenessProbe** | 30s 周期存活检查 | 替代 120s 心跳超时检测 |
+| **Coordination Lease** | Master 选主 | 解决 Master 单点(SPOF) |
+| **StatefulSet** | Subnode 有序部署 | 提供稳定的网络标识 |
+| **Deployment** | Master 滚动升级 + 副本管理 | 替代手动重启 |
+| **ConfigMap / Secret** | 配置和密钥分发 | 替代环境变量手动注入 |
+| **RBAC (Role + RoleBinding)** | Master 访问 Lease 的权限控制 | 新能力 |
+| **Pod 自动重启** | 崩溃恢复 | 替代手动介入 |
+| **滚动升级 (RollingUpdate)** | 零停机升级 | 替代停机维护 |
+
+#### 10.2.3 Web / API 层(完全保留)
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **FastAPI** | 0.110+ | API 路由 | ✅ 保留 |
+| **Pydantic v2** | 2.x | 请求/响应模型校验 | ✅ 保留 |
+| **Uvicorn** | 0.27+ | ASGI 服务器 | ✅ 保留 |
+| **Starlette** | 0.36+ | FastAPI 底层 | ✅ 保留 |
+| **现有 67 个 API 路由** | - | admin / portal / service / yescaptcha | ✅ 完全不变 |
+
+#### 10.2.4 业务逻辑层(完全保留 — 这是本方案的核心价值)
+
+| 组件 | 状态 | 备注 |
+|------|------|------|
+| **三维 bucket affinity 路由** | ✅ 完全保留 | 项目最有价值的资产 |
+| **Per-token 代理覆盖** | ✅ 完全保留 | DB 字段 + 5 个解析函数不变 |
+| **Standby Token Pool** | ✅ 完全保留 | 5 个配置项 + LRU 淘汰 |
+| **槽位预留机制** | ✅ 完全保留 | 防超分配 |
+| **WarmupActor 自动预热** | ✅ 完全保留 | 6 个 auto_warm 配置 |
+| **7 个 0=auto 配置自动派生** | ✅ 完全保留 | 现有 ConfigResolver 逻辑 |
+| **10 层超时配置** | ✅ 完全保留 | execute / reload / clr / score 等 |
+| **重试与故障恢复** | ✅ 完全保留 | recreate_threshold + restart_threshold |
+
+#### 10.2.5 浏览器自动化层(完全保留)
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **Playwright** | 1.40+ | Chromium 自动化 | ✅ 保留 |
+| **nodriver** | 0.48+ | 反检测浏览器(personal 模式) | ✅ 保留 |
+| **Xvfb + fluxbox** | - | Linux headed 模式虚拟显示 | ✅ 保留 |
+| **fake_useragent** | - | UA 指纹池 | ✅ 保留 |
+| **curl-cffi** | 0.6+ | TLS 指纹伪装 | ✅ 保留 |
+| **代理池(全局 + per-token)** | - | 5 个解析/规范化函数 | ✅ 保留 |
+
+#### 10.2.6 数据层(替换 SQLite)
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **PostgreSQL** | 15+ | 主数据库(用户/配额/Job 历史) | 🔄 替换 SQLite |
+| **asyncpg** | 0.29+ | 异步 PostgreSQL 驱动 | 🔄 替换 aiosqlite |
+| **SQLAlchemy 2.x** (可选) | 2.x | ORM(如不想手写 SQL) | 🆕 可选 |
+| **Alembic** | 1.13+ | 数据库 schema 迁移工具 | 🆕 新增 |
+| **Redis** | 7+ | 会话缓存 + 限流 + bucket affinity 持久化 | 🆕 升级为必需 |
+| **redis-py** | 5.0+ | 异步 Redis 客户端 | 🆕 新增 |
+
+**关键变化**:
+- SQLite 完全移除(多 Master 必须共享存储)
+- Redis 从"可选日志后端"升级为"必需的运行时缓存"
+- 引入 Alembic 做 schema 版本管理
+
+**与 Ray 方案相同**: 这是 HA 架构的前置成本,与具体框架无关。
+
+#### 10.2.7 K8s 集成层(本方案唯一的新代码)
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **kubernetes (Python)** | 29.0+ | K8s API Python 客户端 | 🆕 新增 |
+| **K8sLeaderElection** | 自研约 200 行 | 基于 Lease 的 Master 选主 | 🆕 新增 |
+| **K8sDiscovery** | 自研约 100 行 | 基于 Endpoints 的 Subnode 发现 | 🆕 新增 |
+| **健康端点** | 自研约 50 行 | `local/health` + `local/liveness` | 🆕 新增 |
+| **RBAC YAML** | 约 50 行 | Lease + Endpoints + Pods 读取权限 | 🆕 新增 |
+
+**新增代码总量**: **约 400 行**(对比 Ray 方案的 1750 行)
+
+#### 10.2.8 HTTP 客户端 / 工具库
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **httpx** | 0.27+ | 异步 HTTP 客户端(Master 调用 Subnode) | 🔄 替换 `_sync_json_http_request` |
+| **tenacity** | 8.2+ | 重试库(指数退避) | 🆕 新增 |
+
+#### 10.2.9 可观测性
+
+| 组件 | 版本 | 作用 | 状态 |
+|------|------|------|------|
+| **K8s Dashboard** | k3s 内置 | 集群可视化 | 🆕 新增 |
+| **kubectl logs** | k3s 内置 | 日志查看(替代自研 admin 页面) | 🆕 新增 |
+| **K8s Events** | k3s 内置 | Pod 状态变更事件 | 🆕 新增 |
+| **Prometheus** | 2.45+ | 指标采集 | 🆕 推荐 |
+| **Grafana** | 10+ | 可视化看板 | 🆕 推荐 |
+| **Loki** | 2.9+ | 日志聚合 | 🆕 可选 |
+| **OpenTelemetry** | 1.20+ | 分布式追踪 | 🆕 可选 |
+
+#### 10.2.10 认证 / 安全
+
+| 组件 | 作用 | 状态 |
+|------|------|------|
+| **bcrypt / passlib** | 密码哈希 | ✅ 保留 |
+| **PyJWT**(可选) | JWT token | ✅ 保留 |
+| **Bearer Token / API Key** | 业务认证机制 | ✅ 保留 |
+| **K8s ServiceAccount** | Master Pod 访问 K8s API 的身份 | 🆕 新增 |
+| **TLS / Ingress 证书** | Traefik + cert-manager | 🆕 升级 |
+
+#### 10.2.11 配置管理
+
+| 组件 | 作用 | 状态 |
+|------|------|------|
+| **TOML 配置文件** | 静态配置(67 个键) | ✅ 保留 |
+| **环境变量** | `FCS_*` 前缀覆盖 | ✅ 保留 |
+| **K8s ConfigMap** | 把 TOML 注入容器 | 🆕 新增 |
+| **K8s Secret** | 数据库密码、API Key 等 | 🆕 新增 |
+
+#### 10.2.12 测试 / CI
+
+| 组件 | 作用 | 状态 |
+|------|------|------|
+| **pytest + pytest-asyncio** | 单元/集成测试 | ✅ 保留 |
+| **testcontainers-python** | PostgreSQL/Redis 容器测试 | 🆕 新增 |
+| **kind / k3d** | 本地 K8s 集成测试 | 🆕 可选 |
+| **httpx AsyncClient** | API 集成测试 | ✅ 保留 |
+
+### 10.3 最小可运行依赖清单
 
 ```toml
 # pyproject.toml
@@ -977,40 +1124,42 @@ spec:
 [project]
 name = "flow-captcha-service"
 version = "2.0.0"
+description = "Self-hosted CAPTCHA solving service running on k3s"
 requires-python = ">=3.11"
 dependencies = [
-    # Web
+    # === Web 框架(保留)===
     "fastapi>=0.110.0",
     "pydantic>=2.6.0",
     "uvicorn[standard]>=0.27.0",
 
-    # 数据层(替换 SQLite)
-    "asyncpg>=0.29.0",
-    "redis>=5.0.0",
-    "alembic>=1.13.0",
+    # === 数据层(替换 SQLite)===
+    "asyncpg>=0.29.0",            # PostgreSQL 异步驱动
+    "redis>=5.0.0",               # Redis 客户端
+    "alembic>=1.13.0",            # 数据库迁移
+    "sqlalchemy>=2.0.25",         # 可选 ORM
 
-    # 浏览器(完全保留)
+    # === 浏览器自动化(完全保留)===
     "playwright>=1.40.0",
     "nodriver==0.48.1",
     "fake-useragent",
 
-    # K8s 集成(新增)
-    "kubernetes>=29.0.0",       # K8s API 客户端
+    # === K8s 集成(本方案唯一新增的核心依赖)===
+    "kubernetes>=29.0.0",         # K8s Python API 客户端
 
-    # HTTP 工具
+    # === HTTP 工具 ===
     "httpx>=0.27.0",
     "curl-cffi>=0.6.0",
     "tenacity>=8.2.0",
 
-    # 安全
+    # === 安全(保留)===
     "bcrypt>=4.1.0",
     "passlib>=1.7.4",
 
-    # CLI
+    # === CLI ===
     "typer>=0.9.0",
 
-    # 配置
-    "tomli>=2.0.1",
+    # === 配置(保留)===
+    "tomli>=2.0.1",               # TOML 解析(Python 3.11 已内置)
 ]
 
 [project.optional-dependencies]
@@ -1021,32 +1170,277 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
 ]
+
+observability = [
+    "prometheus-client>=0.19.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+]
+
+[project.scripts]
+fcs = "fcs.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fcs"]
 ```
 
-### 10.3 与现有依赖的对比
+**与现有 requirements.txt 对比**:
+- 新增 1 个核心依赖: `kubernetes`
+- 替换 1 个: `aiosqlite` → `asyncpg`
+- 升级 1 个为必需: `redis`
+- 其余 90% 完全不变
 
-| 依赖 | 现有 | k3s 方案 | 变化 |
-|------|------|---------|------|
-| Python | 3.11 | 3.11 | 不变 |
-| FastAPI | ✅ | ✅ | 不变 |
-| Playwright | ✅ | ✅ | 不变 |
-| nodriver | ✅ | ✅ | 不变 |
-| aiosqlite | ✅ | ❌ | **删除** |
-| asyncpg | ❌ | ✅ | **新增** |
-| kubernetes | ❌ | ✅ | **新增** |
-| redis | 可选 | ✅ | **必需** |
-| 自研 cluster_manager 网络层 | ✅ | ❌ | **删除** |
+### 10.4 部署架构基础设施清单
 
-### 10.4 部署组件清单
+#### 10.4.1 生产环境(k3s 单节点起步)
 
-| 组件 | 必需 | 推荐版本 |
-|------|------|---------|
-| k3s | ✅ | 1.28+ |
-| Helm | ✅ | 3.13+ |
-| PostgreSQL | ✅ | 15+ |
-| Redis | 🟡 推荐 | 7+ |
-| Prometheus | 🟡 推荐 | 2.45+ |
-| Grafana | 🟡 推荐 | 10+ |
+```
+单台服务器 (4-8 GB RAM, 2-4 vCPU, 50GB 磁盘)
+  │
+  ├── k3s server (~700MB RAM)
+  │     ├── Traefik Ingress (内置)
+  │     ├── local-path-provisioner (内置)
+  │     ├── CoreDNS (内置)
+  │     └── embedded etcd (HA 模式时启用)
+  │
+  ├── Application Layer (Helm Chart)
+  │     ├── Master Deployment (replicas=2, ~500MB each)
+  │     │     ├── Master 1 (ACTIVE,持有 Lease)
+  │     │     └── Master 2 (STANDBY)
+  │     ├── Subnode StatefulSet (replicas=N, ~1.5GB each + browsers)
+  │     │     ├── Subnode-0 (Browsers×2-4)
+  │     │     ├── Subnode-1 (Browsers×2-4)
+  │     │     └── Subnode-N
+  │     └── Headless Service (subnode 服务发现)
+  │
+  ├── Data Layer
+  │     ├── PostgreSQL StatefulSet (~300MB)
+  │     │     └── Persistent Volume (10-20GB)
+  │     └── Redis StatefulSet (~50MB)
+  │           └── Persistent Volume (1-5GB)
+  │
+  └── Observability (可选)
+        ├── Prometheus (~500MB)
+        ├── Grafana (~150MB)
+        └── Loki (~300MB)
+
+总计资源占用 ≈ 4-6 GB RAM (含浏览器)
+```
+
+#### 10.4.2 生产环境(k3s HA 集群,3 节点)
+
+```
+3 台服务器 (每台 8 GB RAM, 4 vCPU)
+  │
+  ├── k3s Server Node 1 (control plane + worker)
+  │     ├── etcd member 1
+  │     ├── Master Pod 1 (Active)
+  │     └── Subnode Pod 0
+  │
+  ├── k3s Server Node 2 (control plane + worker)
+  │     ├── etcd member 2
+  │     ├── Master Pod 2 (Standby)
+  │     └── Subnode Pod 1
+  │
+  ├── k3s Server Node 3 (control plane + worker)
+  │     ├── etcd member 3
+  │     └── Subnode Pod 2
+  │
+  └── 外部托管(推荐):
+        ├── PostgreSQL: 云厂商 RDS / 自建 HA
+        ├── Redis: 云厂商 / 自建主从
+        └── 监控栈: 独立部署或 SaaS
+```
+
+#### 10.4.3 开发环境(docker-compose)
+
+```yaml
+# deploy/docker/docker-compose.dev.yml
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: fcs
+      POSTGRES_USER: fcs
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  master:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.master
+    environment:
+      FCS_DB_DSN: postgresql://fcs:changeme@postgres:5432/fcs
+      FCS_REDIS_URL: redis://redis:6379/0
+      FCS_CLUSTER_ROLE: master
+      FCS_DEV_MODE: "true"  # 开发模式跳过 K8s,用文件锁选主
+    ports:
+      - "8060:8060"
+    depends_on: [postgres, redis]
+
+  subnode:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.subnode
+    environment:
+      FCS_DB_DSN: postgresql://fcs:changeme@postgres:5432/fcs
+      FCS_CLUSTER_ROLE: subnode
+      FCS_DEV_MODE: "true"
+    deploy:
+      replicas: 2
+    depends_on: [postgres, redis, master]
+```
+
+**开发模式说明**: 设置 `FCS_DEV_MODE=true` 跳过 K8s 集成,改用文件锁/SQLite Lease 模拟选主,便于本地开发调试。
+
+### 10.5 技术栈对比: 现状 vs k3s 方案 vs Ray 方案
+
+| 层 | 现状 | **k3s 方案** | Ray 方案 |
+|----|------|-------------|---------|
+| **运行时** | Python 3.11 + asyncio | Python 3.11 + asyncio | Python 3.11 + asyncio + Ray |
+| **数据库** | SQLite (aiosqlite) | **PostgreSQL (asyncpg)** | PostgreSQL (asyncpg) |
+| **缓存** | 无 / 可选 Redis | **Redis (必需)** | Redis (必需) |
+| **Web 框架** | FastAPI | **FastAPI(完全保留)** | FastAPI + Serve 集成 |
+| **HTTP 客户端** | 自研 + httpx | **httpx + tenacity** | httpx + tenacity |
+| **集群协调** | 自研 cluster_manager (~1200 行) | **K8s Service + Lease + Probes** | Ray GCS + Serve |
+| **路由层** | 自研三维 affinity 路由 | **完全保留(0 改动)** | ❌ Ray multiplex 不匹配 |
+| **服务发现** | HTTP 注册接口 | **K8s Service 自动** | Ray GCS 自动 |
+| **健康检查** | 心跳 (15s) + SQL 查询 | **K8s Probes (15s 检测)** | Serve `check_health` |
+| **失活检测速度** | 120s | **15s** | 即时 |
+| **负载均衡** | 自研加权轮询 | **保留(配合 K8s 服务发现)** | Serve 内置 + multiplex |
+| **HA** | 无 | **K8s Lease 选主(15s 故障转移)** | Ray Head HA + KubeRay |
+| **自动伸缩** | 无 / 手动 | **K8s HPA(可选)** | Serve `autoscaling_config` |
+| **容器化** | Docker (Dockerfile.headed/master) | **Docker(轻度改造)** | Docker(完全重写) |
+| **编排** | docker-compose | **k3s + Helm** | Kubernetes + KubeRay |
+| **监控** | 自研 admin 页面 | **K8s Dashboard + Prometheus** | Ray Dashboard + Prometheus |
+| **日志** | 文件 / Redis List | **kubectl logs + Loki(可选)** | Ray log streaming + Loki |
+| **配置** | TOML + 环境变量 | **TOML + ConfigMap + Secret** | TOML + Serve YAML + ConfigMap |
+| **测试** | pytest + 临时 SQLite | **pytest + testcontainers** | pytest + testcontainers + ray.test_utils |
+
+### 10.6 技术栈复杂度对比
+
+#### 现状(Standalone 模式最小启动)
+
+```
+1. Python 3.11
+2. pip install -r requirements.txt
+3. python -m playwright install chromium
+4. python -m src.main
+```
+
+**外部依赖数**: 0 (SQLite 是文件)
+**启动时间**: ~1 秒
+**资源占用**: ~500MB RAM
+
+#### k3s 方案(开发环境)
+
+```
+1. Python 3.11
+2. PostgreSQL (本地或 Docker)
+3. Redis (本地或 Docker)
+4. pip install -e .
+5. python -m playwright install chromium
+6. alembic upgrade head        # schema 初始化
+7. docker-compose -f deploy/docker/docker-compose.dev.yml up
+```
+
+**外部依赖数**: 2 (PostgreSQL + Redis,K8s 在开发模式跳过)
+**启动时间**: ~10 秒
+**资源占用**: ~1.5 GB RAM
+
+#### k3s 方案(生产部署,单节点)
+
+```
+1. curl -sfL https://get.k3s.io | sh -          # 装 k3s
+2. helm install postgres bitnami/postgresql ...  # 装 PostgreSQL
+3. helm install redis bitnami/redis ...          # 装 Redis
+4. helm install fcs ./deploy/helm/flow-captcha   # 装应用
+5. kubectl apply -f ingress.yaml                 # 暴露服务
+```
+
+**外部依赖数**: 3 (k3s + PostgreSQL + Redis)
+**启动时间**: ~30 秒(整个集群)
+**资源占用**: ~4-6 GB RAM
+
+#### Ray 方案(生产部署,对比)
+
+```
+1. Kubernetes 集群
+2. helm install kuberay-operator ...
+3. kubectl apply -f raycluster.yaml
+4. kubectl apply -f postgres.yaml
+5. kubectl apply -f redis.yaml
+6. kubectl apply -f rayservice.yaml
+7. kubectl apply -f ingress.yaml
+8. helm install prometheus ...
+9. helm install grafana ...
+```
+
+**外部依赖数**: 6+ (K8s + KubeRay + Ray + PG + Redis + Prometheus + Grafana)
+**启动时间**: ~2-3 分钟
+**资源占用**: ~6-8 GB RAM
+
+### 10.7 技术栈成本/复杂度评估
+
+| 维度 | 现状 | **k3s 方案(推荐)** | Ray 方案 |
+|------|------|------------------|---------|
+| **依赖组件数** | 1 (SQLite) | **3 (k3s + PG + Redis)** | 6+ |
+| **最小机器规模** | 1 台 2GB | **1 台 4-8GB** | 3 台 8GB+ |
+| **运维门槛** | 低(懂 Python 即可) | **中(K8s 基础)** | 高(K8s + Ray + DB) |
+| **学习成本** | 1-2 天 | **1 周(K8s 基础)** | 2-4 周(Ray + multiplex + K8s) |
+| **代码改动** | - | **~600 行删除 + ~400 行新增 = -200 行** | ~2000 行删除 + ~1750 行新增 = -250 行 |
+| **业务代码可复用率** | - | **80-90%** | 40-50% |
+| **部署复杂度** | `python -m src.main` | **`helm install`(几条命令)** | Helm + 多 CRD + KubeRay operator |
+| **资源占用(生产最小)** | ~500MB RAM | **~4-6GB RAM** | ~6-8GB RAM |
+| **故障排查难度** | 简单(单进程日志) | **中(kubectl + 标准 K8s 工具)** | 复杂(跨 actor 异步追踪) |
+| **HA 能力** | 无 | **15s 故障转移** | 即时 |
+| **未来扩展性** | 受限 | **可平滑升级到完整 K8s** | 已是终态 |
+| **3D affinity 路由** | ✅ 现有实现 | **✅ 完全保留** | ❌ Ray multiplex 退化 |
+| **Per-token 代理** | ✅ 现有实现 | **✅ 完全保留** | 🟡 需要重写 |
+| **改造时间** | - | **4-6 周** | 3-6 个月 |
+| **回滚难度** | - | **低(分阶段可回滚)** | 高 |
+| **社区支持** | 无 | **活跃(Rancher + CNCF)** | 活跃(Anyscale) |
+
+### 10.8 关键决策点
+
+如果要采用 k3s 方案,**有几个无法回避的硬性要求**:
+
+1. ✅ **必须迁移到 PostgreSQL**(SQLite 无法用于多 Master 共享状态)
+2. ✅ **必须引入 Redis**(用于会话缓存、bucket affinity 持久化)
+3. ✅ **必须用 k3s 或 K8s**(本方案的核心)
+4. 🟡 **建议搭建监控栈**(Prometheus + Grafana,k3s 上可用 `kube-prometheus-stack`)
+5. 🟡 **团队需要懂基本 K8s 操作**(kubectl, Helm, Pod, Service, Probe, ConfigMap)
+
+> ⚠️ **第 1、2、3 条是硬性要求,不满足无法启动该方案。第 4、5 条可在初期简化。**
+
+> 💡 **与 Ray 方案的区别**: k3s 方案不要求团队懂 Ray 的复杂概念(Actor、Serve、multiplex、autoscaling 调参),只需要 K8s 的基础知识,而 K8s 知识在云原生时代是更通用的技能投资。
+
+### 10.9 技术栈选型总结
+
+| 层级 | 选型 | 理由 |
+|------|------|------|
+| **容器编排** | **k3s** | 单二进制、轻量、100% K8s 兼容、可平滑升级 |
+| **Master HA** | **K8s Lease** | 标准模式、不引入额外协调服务 |
+| **服务发现** | **K8s Service + Endpoints** | 框架原生、自动维护 |
+| **健康检查** | **K8s Probes** | 框架原生、5s 周期 |
+| **数据库** | **PostgreSQL** | 多写者支持、生态成熟 |
+| **缓存** | **Redis** | 持久化 affinity、限流 |
+| **路由层** | **保留现有 cluster_manager** | 业务最优,不重新发明轮子 |
+| **浏览器** | **Playwright + nodriver** | 完全保留 |
+| **Web 框架** | **FastAPI** | 完全保留 |
+| **配置** | **TOML + ConfigMap** | 现有 TOML 不变,K8s 注入容器 |
+| **监控** | **K8s Dashboard + Prometheus** | 标准云原生监控栈 |
+| **HTTP Client** | **httpx + tenacity** | 替换自研同步实现 |
 
 ---
 
