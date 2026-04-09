@@ -1,0 +1,77 @@
+# ============================================================
+# Flow Captcha Service — Staging Subnode 配置
+# 用法: FCS_CONFIG_FILE=config/setting_staging_subnode.toml python main.py
+# ============================================================
+
+[server]
+host = "0.0.0.0"
+port = 8060
+
+[storage]
+db_path = "data/captcha_service.db"
+
+[admin]
+username = "admin"
+password = "admin"
+
+[captcha]
+captcha_method = "browser"
+browser_count = 3                          # Staging Subnode 开 3 个浏览器
+browser_proxy_enabled = false
+browser_proxy_url = ""
+browser_launch_background = true
+browser_fingerprint_pool_extra_count = 100
+browser_custom_page_cache_max_pages = 3
+browser_custom_page_idle_ttl_seconds = 240
+browser_project_affinity_max_keys = 0      # 0 = auto: max(32, browser_count * 16)
+browser_project_affinity_ttl_seconds = 1800
+browser_flow_website_key = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
+browser_auto_warm_project_id = ""
+browser_auto_warmup_action = "IMAGE_GENERATION"
+browser_score_dom_wait_seconds = 25
+browser_recaptcha_settle_seconds = 0
+browser_standby_token_pool_enabled = true
+browser_standby_token_ttl_seconds = 60
+browser_standby_token_pool_depth = 2
+browser_standby_bucket_max_count = 0       # 0 = auto: max(32, browser_count * 12)
+browser_standby_bucket_idle_ttl_seconds = 0
+browser_standby_refill_idle_seconds = 0.8
+browser_score_test_warmup_seconds = 12
+browser_score_test_settle_seconds = 2.5
+browser_idle_ttl_seconds = 600
+browser_retry_max_attempts = 3
+browser_retry_backoff_seconds = 1
+browser_execute_timeout_seconds = 0        # 0 = 使用内置默认超时
+browser_reload_wait_timeout_seconds = 12
+browser_clr_wait_timeout_seconds = 12
+browser_idle_reaper_interval_seconds = 15
+browser_request_finish_image_wait_seconds = 0
+browser_request_finish_non_image_wait_seconds = 0
+browser_auto_warm_website_url = ""
+browser_auto_warm_website_key = ""
+browser_auto_warm_action = "homepage"
+personal_project_pool_size = 4
+personal_max_resident_tabs = 5
+personal_idle_tab_ttl_seconds = 600
+browser_personal_recreate_threshold = 2
+browser_personal_restart_threshold = 3
+flow_timeout = 300
+upsample_timeout = 300
+session_ttl_seconds = 1200
+node_name = "staging-subnode-1"            # 多个 Subnode 时改为 -2, -3 ...
+
+[log]
+level = "DEBUG"                            # Staging 使用 DEBUG
+storage_backend = "sqlite"                 # Subnode 本地日志用 SQLite 即可
+startup_clear_on_boot = true
+auto_clear_interval_minutes = 60
+
+[cluster]
+role = "subnode"
+master_base_url = "http://staging-master:8060"             # ← 改为实际 Master 地址
+master_cluster_key = "staging-cluster-secret-change-me"    # 必须与 Master 一致
+node_public_base_url = "http://staging-subnode-1:8060"     # ← 改为本机 Master 可达地址
+node_api_key = "staging-subnode-internal-key"              # Subnode 内部认证 Key
+heartbeat_interval_seconds = 15
+node_weight = 100
+node_max_concurrency = 0                   # 0 = 跟随 browser_count (3)

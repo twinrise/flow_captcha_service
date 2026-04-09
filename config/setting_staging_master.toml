@@ -1,0 +1,42 @@
+# ============================================================
+# Flow Captcha Service — Staging Master 配置
+# 用法: FCS_CONFIG_FILE=config/setting_staging_master.toml python main.py
+# ============================================================
+
+[server]
+host = "0.0.0.0"
+port = 8060
+
+[storage]
+db_path = "data/captcha_service.db"
+
+[admin]
+username = "admin"
+password = "admin"
+
+[captcha]
+captcha_method = "browser"
+browser_count = 0                          # Master 不运行浏览器
+session_ttl_seconds = 1200
+node_name = "staging-master"
+
+[log]
+level = "DEBUG"                            # Staging 使用 DEBUG 便于排查
+storage_backend = "redis"                  # 集群模式用 Redis 聚合日志
+redis_url = "redis://127.0.0.1:6379/0"    # Staging 独立 Redis，按实际地址修改
+redis_key_prefix = "fcs_staging"           # 加 staging 前缀隔离数据
+redis_max_entries = 20000
+startup_clear_on_boot = true
+auto_clear_interval_minutes = 60           # 每小时自动清理旧日志
+
+[cluster]
+role = "master"
+master_base_url = ""                       # Master 自身不需要填
+master_cluster_key = "staging-cluster-secret-change-me"   # 集群通信密钥，所有节点需一致
+node_public_base_url = ""                  # Master 不需要填
+node_api_key = ""                          # Master 不需要填
+heartbeat_interval_seconds = 15
+node_weight = 100
+node_max_concurrency = 0
+master_node_stale_seconds = 120            # 超过 120s 无心跳判定节点离线
+master_dispatch_timeout_seconds = 45       # 转发到 Subnode 的超时

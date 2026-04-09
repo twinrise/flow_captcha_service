@@ -12,13 +12,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt ./
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends --fix-missing \
         ca-certificates \
         curl \
         procps \
         xvfb \
         x11-utils \
         fluxbox \
+    || (apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+        ca-certificates \
+        curl \
+        procps \
+        xvfb \
+        x11-utils \
+        fluxbox) \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
